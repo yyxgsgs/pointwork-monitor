@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: pointwork-uptime
@@ -16,11 +17,38 @@ jobs:
   health:
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      HEALTHCHECK_URL: https://pointwork.cyou/healthz
+      INCIDENT_TITLE: Pointwork health check failing
     steps:
       - name: Check Pointwork health endpoint
         shell: bash
         run: |
           set -euo pipefail
-          response="$(curl --fail-with-body --silent --show-error --max-time 30 https://pointwork.cyou/healthz)"
+          response="$(curl --fail-with-body --silent --show-error --max-time 30 "$HEALTHCHECK_URL")"
           printf '%s\n' "$response"
           [[ "$response" == *'"status":"ok"'* ]]
+
+      - name: Open incident issue on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh issue list --state open --search '"'"$INCIDENT_TITLE"'" in:title' --json number --jq '.[0].number // empty')"
+          if [[ -z "$number" ]]; then
+            gh issue create \
+              --title "$INCIDENT_TITLE" \
+              --body "The scheduled health check for $HEALTHCHECK_URL failed. See the latest run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
+
+      - name: Close incident issue after recovery
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$(gh issue list --state open --search '"'"$INCIDENT_TITLE"'" in:title' --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh issue close "$number" --comment "Pointwork health check recovered."
+          fi
